@@ -248,19 +248,12 @@ def generate_inflections(words):
 
 
 def generate_multiword_verb_inflections(words, synonyms):
-    """Generate inflected aliases for common English verb phrases.
-
-    StarDict headwords often contain phrasal verbs and constructions such as
-    "get to know". Inflecting every word in every phrase would create many
-    nonsensical aliases, so this handles phrases beginning with a WordNet verb
-    followed by a common particle/preposition, and inflects only that first
-    verb (e.g. "got to know" -> "get to know").
-    """
+    """Generate aliases by inflecting the verb at the start of dictionary phrases."""
     from nltk.corpus import wordnet as wn
 
     particles = {
         "about", "across", "after", "along", "apart", "around", "aside",
-        "at", "away", "back", "by", "down", "for", "forth", "from", "in",
+        "at", "away", "back", "by", "down", "for", "forth", "forward", "from", "in",
         "into", "off", "on", "onto", "out", "over", "through", "to",
         "together", "under", "up", "upon", "with",
     }
@@ -272,7 +265,16 @@ def generate_multiword_verb_inflections(words, synonyms):
         parts = phrase.split()
         if len(parts) < 2 or not re.fullmatch(r"[A-Za-z][A-Za-z'-]*", parts[0]):
             continue
-        if parts[1].casefold() not in particles:
+        # Handle both verb + particle ("get to know") and verb + object +
+        # preposition ("abandon oneself to something"). Only inflect the
+        # initial verb; object and particle positions stay fixed.
+        second = parts[1].casefold()
+        has_particle_after_object = (
+            second in {"someone", "somebody", "something", "oneself", "yourself",
+                       "himself", "herself", "itself", "themselves"}
+            and any(part.casefold() in particles for part in parts[2:])
+        )
+        if second not in particles and not has_particle_after_object:
             continue
         if not wn.synsets(parts[0].replace("'", ""), pos=wn.VERB):
             continue
@@ -296,6 +298,89 @@ def generate_multiword_verb_inflections(words, synonyms):
     output = list(result.values())
     output.sort(key=lambda item: stardict_sort_key(item[0]))
     print(f"Added multiword verb aliases: {added:,}")
+    return output
+
+
+def generate_noun_phrase_inflections(words, synonyms):
+    """Add plural aliases for clear determiner-led noun phrases.
+
+    The head is selected as the rightmost WordNet noun before a prepositional
+    phrase, or the rightmost noun in a simple compound. Indefinite articles
+    are dropped in the plural ("a bad apple" -> "bad apples").
+    """
+    from nltk.corpus import wordnet as wn
+
+    determiners = {"a", "an", "the", "this", "that", "these", "those"}
+    prepositions = {
+        "about", "across", "after", "against", "along", "among", "around",
+        "at", "before", "behind", "below", "beneath", "beside", "between",
+        "beyond", "by", "despite", "during", "for", "from", "in", "into",
+        "near", "of", "off", "on", "onto", "out", "over", "through",
+        "to", "under", "up", "upon", "with", "within", "without",
+    }
+    exact_headwords = {word.casefold() for word, _, _ in words}
+    result = {form.casefold(): (form, index) for form, index in synonyms}
+    added = 0
+
+    def plural_forms(noun):
+        forms = getAllInflections(noun).get("NNS", ())
+        if forms:
+            return forms
+
+        # LemmInflect does not list every regular dictionary noun (for
+        # example, "boomer"). Use a regular fallback only after WordNet has
+        # confirmed the token is a noun.
+        lower = noun.casefold()
+        if re.search(r"[^aeiou]y$", lower):
+            return (noun[:-1] + "ies",)
+        if lower.endswith(("s", "x", "z", "ch", "sh")):
+            return (noun + "es",)
+        if lower in {"sheep", "deer", "fish", "species", "series"}:
+            return ()
+        return (noun + "s",)
+
+    for index, (phrase, _, _) in enumerate(words):
+        parts = phrase.split()
+        if len(parts) < 2 or parts[0].casefold() not in determiners:
+            continue
+
+        # A/an is only valid for singulars. "the" and demonstratives remain.
+        body_start = 1
+        prep_pos = next(
+            (i for i in range(body_start + 1, len(parts))
+             if parts[i].casefold() in prepositions),
+            len(parts),
+        )
+        head_candidates = [
+            i for i in range(body_start, prep_pos)
+            if re.fullmatch(r"[A-Za-z][A-Za-z'-]*", parts[i])
+            and wn.synsets(parts[i].replace("'", ""), pos=wn.NOUN)
+            and plural_forms(parts[i])
+        ]
+        if not head_candidates:
+            continue
+
+        head_pos = head_candidates[-1]
+        plurals = plural_forms(parts[head_pos])
+        for plural in plurals:
+            if plural.casefold() == parts[head_pos].casefold():
+                continue
+            plural_parts = list(parts)
+            plural_parts[head_pos] = plural
+            if parts[0].casefold() in {"a", "an"}:
+                del plural_parts[0]
+            elif parts[0].casefold() in {"this", "that"}:
+                plural_parts[0] = "these" if parts[0].casefold() == "this" else "those"
+            variant = " ".join(plural_parts)
+            key = variant.casefold()
+            if key in exact_headwords or key in result:
+                continue
+            result[key] = (variant, index)
+            added += 1
+
+    output = list(result.values())
+    output.sort(key=lambda item: stardict_sort_key(item[0]))
+    print(f"Added noun phrase plural aliases: {added:,}")
     return output
 
 
@@ -424,6 +509,7 @@ def main():
 
     synonyms = generate_inflections(words)
     synonyms = generate_multiword_verb_inflections(words, synonyms)
+    synonyms = generate_noun_phrase_inflections(words, synonyms)
 
     if not args.no_wordnet:
         synonyms = add_wordnet_derivations(words, synonyms)
