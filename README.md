@@ -43,34 +43,57 @@ venv/bin/python add_inflections.py "/path/to/dictionary.ifo" --force --lemma-map
 
 ## Set up Python
 
-Run this once from the project directory:
+From the project directory, run:
 
 ```bash
 ./setup_environment.sh
 ```
 
-The script creates `venv/` if needed, installs the pinned Python dependencies,
-and downloads the NLTK WordNet corpus. It can be run again to repair or refresh
-the setup. Override the interpreter or environment path with `PYTHON` or
-`VENV_DIR` if needed.
+The script creates `venv/` if needed, installs the Python packages pinned in
+`requirements.txt`, and downloads the NLTK WordNet corpus. You can run it again
+to check and repair the environment. Set `PYTHON` to choose the interpreter
+used to create the virtual environment, or `VENV_DIR` to choose its path.
 
 ## Update a StarDict dictionary
 
 The dictionary's `.ifo`, `.idx`, and `.dict` files must share the same base
-name. Run:
+name. Pass the `.ifo` path to the script:
 
 ```bash
 venv/bin/python add_inflections.py "/path/to/dictionary.ifo" --force
 ```
 
-This regenerates `.syn` with English inflections, selected multiword verb and
-noun phrase forms, and unambiguous WordNet derivational aliases, and updates
-`synwordcount` in `.ifo`. Existing `.syn` and `.ifo` files are backed up to
-their `.bak` paths on each run. Use `--no-wordnet` to omit WordNet derivational
-aliases, `--merge-existing-syn` to retain old `.syn` entries, and `--lemma-map`
-to supply dictionary-specific form-to-lemma mappings. Missing targets in the
-specified mapping file are skipped with a warning. No special mappings are
-applied unless `--lemma-map` is provided; `lemma-map.json` contains the former
-in-code examples. Inflection aliases with multiple lemma targets are omitted
-instead of being assigned by dictionary order; an explicit mapping can resolve
-a desired case.
+This generates English inflection aliases, selected multiword verb forms
+(such as `get to know` and `abandon oneself to something`), plural forms of
+some determiner-led noun phrases (such as `a bad apple` → `bad apples`), and
+unambiguous WordNet derivational aliases. It then updates `synwordcount` in
+`.ifo`.
+
+By default, the script replaces an existing `.syn` file. Use
+`--merge-existing-syn` to keep its aliases; if a generated alias has the same
+spelling, the newly generated entry takes precedence. The current `.syn` and
+`.ifo` are backed up to their `.bak` paths on every run. Add `--no-wordnet` to
+skip WordNet derivational aliases.
+
+Dictionary-specific form-to-lemma mappings are stored in
+[`lemma-map.json`](lemma-map.json). This file is an example/configuration file
+and is **not applied unless explicitly passed** with `--lemma-map`:
+
+```json
+{
+  "went": "go",
+  "better": "good"
+}
+```
+
+Edit the file to keep only mappings appropriate for your dictionary, then run:
+
+```bash
+venv/bin/python add_inflections.py "/path/to/dictionary.ifo" --force --lemma-map lemma-map.json
+```
+
+Mappings whose target lemmas are absent from the dictionary are skipped with a
+warning. Without `--lemma-map`, no explicit mappings are applied. If automatic
+morphology finds that a spelling could point to multiple lemmas, it omits that
+alias instead of choosing a target based on dictionary order. Add an explicit
+mapping when you want to resolve such a case.
