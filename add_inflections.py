@@ -247,6 +247,58 @@ def generate_inflections(words):
     return synonyms
 
 
+def generate_multiword_verb_inflections(words, synonyms):
+    """Generate inflected aliases for common English verb phrases.
+
+    StarDict headwords often contain phrasal verbs and constructions such as
+    "get to know". Inflecting every word in every phrase would create many
+    nonsensical aliases, so this handles phrases beginning with a WordNet verb
+    followed by a common particle/preposition, and inflects only that first
+    verb (e.g. "got to know" -> "get to know").
+    """
+    from nltk.corpus import wordnet as wn
+
+    particles = {
+        "about", "across", "after", "along", "apart", "around", "aside",
+        "at", "away", "back", "by", "down", "for", "forth", "from", "in",
+        "into", "off", "on", "onto", "out", "over", "through", "to",
+        "together", "under", "up", "upon", "with",
+    }
+    exact_headwords = {word.casefold() for word, _, _ in words}
+    result = {form.casefold(): (form, index) for form, index in synonyms}
+    added = 0
+
+    for index, (phrase, _, _) in enumerate(words):
+        parts = phrase.split()
+        if len(parts) < 2 or not re.fullmatch(r"[A-Za-z][A-Za-z'-]*", parts[0]):
+            continue
+        if parts[1].casefold() not in particles:
+            continue
+        if not wn.synsets(parts[0].replace("'", ""), pos=wn.VERB):
+            continue
+
+        try:
+            forms = getAllInflections(parts[0])
+        except Exception:
+            continue
+
+        for tag in ("VBD", "VBN", "VBG", "VBZ"):
+            for form in forms.get(tag, ()):
+                if form.casefold() == parts[0].casefold():
+                    continue
+                variant = " ".join((form, *parts[1:]))
+                key = variant.casefold()
+                if key in exact_headwords or key in result:
+                    continue
+                result[key] = (variant, index)
+                added += 1
+
+    output = list(result.values())
+    output.sort(key=lambda item: stardict_sort_key(item[0]))
+    print(f"Added multiword verb aliases: {added:,}")
+    return output
+
+
 def add_wordnet_derivations(words, synonyms):
     """Add unambiguous WordNet derivational/pertainym aliases.
 
@@ -371,6 +423,7 @@ def main():
     print("Generating English inflections...")
 
     synonyms = generate_inflections(words)
+    synonyms = generate_multiword_verb_inflections(words, synonyms)
 
     if not args.no_wordnet:
         synonyms = add_wordnet_derivations(words, synonyms)

@@ -2,7 +2,7 @@
 
 ## 한국어 안내
 
-이 도구는 StarDict 사전에 영어 활용형과 WordNet 파생형을 검색 별칭으로 추가합니다. `.syn`을 만들고 `.ifo`의 `synwordcount`를 갱신합니다.
+이 도구는 StarDict 사전에 영어 활용형, 일부 동사구 활용형, WordNet 파생형을 검색 별칭으로 추가합니다. `.syn`을 만들고 `.ifo`의 `synwordcount`를 갱신합니다.
 
 ### Python 환경 설정
 
@@ -24,7 +24,7 @@ Python 인터프리터나 가상환경 경로를 바꾸려면 `PYTHON` 또는 `V
 venv/bin/python add_inflections.py "/경로/사전.ifo" --force
 ```
 
-기존 `.syn`을 덮어쓰며, 원본 `.syn`과 `.ifo`는 각각 `.bak` 파일로 백업합니다. WordNet 파생형 없이 활용형만 만들려면 `--no-wordnet` 옵션을 추가하세요.
+기존 `.syn`을 덮어쓰며, 원본 `.syn`과 `.ifo`는 각각 `.bak` 파일로 백업합니다. WordNet 파생형 없이 활용형만 만들려면 `--no-wordnet` 옵션을 추가하세요. 구 단위 표제어는 그대로 보존하고, 첫 단어가 동사이며 뒤에 전치사·부사가 오는 일부 동사구(예: `get to know`)는 첫 동사의 활용형 별칭도 생성합니다.
 
 ## Set up Python
 
@@ -48,7 +48,7 @@ name. Run:
 venv/bin/python add_inflections.py "/path/to/dictionary.ifo" --force
 ```
 
-This regenerates `.syn` with English inflections and unambiguous WordNet
-derivational aliases, and updates `synwordcount` in `.ifo`. Existing `.syn`
-and `.ifo` files are backed up as `.bak` files. Use `--no-wordnet` to generate
-inflection aliases only.
+This regenerates `.syn` with English inflections, selected multiword verb
+inflections, and unambiguous WordNet derivational aliases, and updates
+`synwordcount` in `.ifo`. Existing `.syn` and `.ifo` files are backed up as
+`.bak` files. Use `--no-wordnet` to omit WordNet derivational aliases.
