@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 
 import argparse
+import json
 import os
 import re
 import shutil
 import struct
 import sys
+import tempfile
 
 from lemminflect import getAllInflections
 
@@ -19,6 +21,19 @@ def stardict_sort_key(word):
     같으면 원래 문자열 비교.
     """
     return (word.lower(), word)
+
+
+def add_alias_candidate(result, ambiguous, form, index):
+    """Keep an alias only while all generated candidates agree on its target."""
+    key = form.casefold()
+    if key in ambiguous:
+        return
+    existing = result.get(key)
+    if existing is None:
+        result[key] = (form, index)
+    elif existing[1] != index:
+        result.pop(key, None)
+        ambiguous.add(key)
 
 
 def read_ifo(path):
@@ -101,10 +116,38 @@ def write_syn(path, synonyms):
             f.write(struct.pack(">I", original_index))
 
 
-def update_ifo(path, syn_count):
-    """
-    .ifo에 synwordcount를 추가/수정한다.
-    """
+def read_syn(path, entry_count):
+    """Read existing StarDict .syn entries and validate their target indexes."""
+    entries = []
+    with open(path, "rb") as f:
+        while True:
+            chars = bytearray()
+            while True:
+                char = f.read(1)
+                if not char:
+                    if chars:
+                        raise RuntimeError("잘못된 .syn 파일: 마지막 별칭이 NULL로 끝나지 않았습니다.")
+                    return entries
+                if char == b"\0":
+                    break
+                chars.extend(char)
+
+            raw_index = f.read(4)
+            if len(raw_index) != 4:
+                raise RuntimeError("잘못된 .syn 파일: 표제어 인덱스가 잘렸습니다.")
+            index = struct.unpack(">I", raw_index)[0]
+            if index >= entry_count:
+                raise RuntimeError(f"잘못된 .syn 파일: 대상 인덱스 {index}가 범위를 벗어났습니다.")
+            entries.append((chars.decode("utf-8", errors="replace"), index))
+
+
+def write_text(path, content):
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(content)
+
+
+def updated_ifo_text(path, syn_count):
+    """Return .ifo contents with the current synonym count."""
     with open(path, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
@@ -125,11 +168,10 @@ def update_ifo(path, syn_count):
 
         output.append(f"synwordcount={syn_count}\n")
 
-    with open(path, "w", encoding="utf-8") as f:
-        f.writelines(output)
+    return "".join(output)
 
 
-def generate_inflections(words):
+def generate_inflections(words, explicit_lemmas=None):
     """
     사전의 lemma 각각에 대해 LemmInflect로
     가능한 영어 활용형을 생성한다.
@@ -151,21 +193,10 @@ def generate_inflections(words):
         lower_to_index.setdefault(word.lower(), index)
 
     result = {}
+    ambiguous = set()
 
-    # Resolve these common, unambiguous forms to their requested lemmas even
-    # when the inflected spelling is also present as a separate headword.
-    preferred_lemmas = {
-        "precautions": "precaution",
-        "precaution's": "precaution",
-        "studies": "study",
-        "studied": "study",
-        "studying": "study",
-        "protected": "protect",
-        "protecting": "protect",
-        "children": "child",
-        "men": "man",
-        "went": "go",
-    }
+    # Explicit mappings are applied only when the user supplies a map.
+    explicit_lemmas = explicit_lemmas or {}
 
     total = len(words)
 
@@ -208,18 +239,13 @@ def generate_inflections(words):
                 if form.lower() in lower_to_index:
                     continue
 
-                key = form.lower()
-
-                # 동일한 inflection이 여러 lemma에서 발생하면
-                # 첫 번째 것만 사용한다.
-                if key not in result:
-                    result[key] = (form, index)
+                add_alias_candidate(result, ambiguous, form, index)
 
         # English possessive form (lemminflect does not emit possessives).
         if "NN" in forms or "NNS" in forms:
             possessive = lemma + ("'" if lemma.lower().endswith("s") else "'s")
             if possessive.lower() not in lower_to_index:
-                result.setdefault(possessive.lower(), (possessive, index))
+                add_alias_candidate(result, ambiguous, possessive, index)
 
         if (index + 1) % 10000 == 0:
             print(
@@ -230,10 +256,29 @@ def generate_inflections(words):
     # Apply explicit lemma choices after generated forms so collisions cannot
     # redirect these forms to a different dictionary entry.
     index_by_lower = {word.lower(): i for i, (word, _, _) in enumerate(words)}
-    for form, lemma in preferred_lemmas.items():
+    applied = 0
+    skipped = []
+    for form, lemma in explicit_lemmas.items():
         if lemma.lower() not in index_by_lower:
-            raise RuntimeError(f"required lemma is missing from dictionary: {lemma}")
+            skipped.append(f"{form} -> {lemma}")
+            continue
+        ambiguous.discard(form.lower())
         result[form.lower()] = (form, index_by_lower[lemma.lower()])
+        applied += 1
+
+    if skipped:
+        print(
+            "Skipped explicit lemma mappings whose targets are absent: "
+            + ", ".join(skipped),
+            file=sys.stderr,
+        )
+    if applied:
+        print(f"Applied explicit lemma mappings: {applied:,}")
+    if ambiguous:
+        print(
+            f"Omitted ambiguous inflection aliases: {len(ambiguous):,}",
+            file=sys.stderr,
+        )
 
     synonyms = [
         (form, index)
@@ -259,6 +304,7 @@ def generate_multiword_verb_inflections(words, synonyms):
     }
     exact_headwords = {word.casefold() for word, _, _ in words}
     result = {form.casefold(): (form, index) for form, index in synonyms}
+    ambiguous = set()
     added = 0
 
     for index, (phrase, _, _) in enumerate(words):
@@ -290,14 +336,18 @@ def generate_multiword_verb_inflections(words, synonyms):
                     continue
                 variant = " ".join((form, *parts[1:]))
                 key = variant.casefold()
-                if key in exact_headwords or key in result:
+                if key in exact_headwords or key in ambiguous:
                     continue
-                result[key] = (variant, index)
-                added += 1
+                was_present = key in result
+                add_alias_candidate(result, ambiguous, variant, index)
+                if not was_present and key in result:
+                    added += 1
 
     output = list(result.values())
     output.sort(key=lambda item: stardict_sort_key(item[0]))
     print(f"Added multiword verb aliases: {added:,}")
+    if ambiguous:
+        print(f"Omitted ambiguous multiword verb aliases: {len(ambiguous):,}", file=sys.stderr)
     return output
 
 
@@ -320,6 +370,7 @@ def generate_noun_phrase_inflections(words, synonyms):
     }
     exact_headwords = {word.casefold() for word, _, _ in words}
     result = {form.casefold(): (form, index) for form, index in synonyms}
+    ambiguous = set()
     added = 0
 
     def plural_forms(noun):
@@ -373,14 +424,18 @@ def generate_noun_phrase_inflections(words, synonyms):
                 plural_parts[0] = "these" if parts[0].casefold() == "this" else "those"
             variant = " ".join(plural_parts)
             key = variant.casefold()
-            if key in exact_headwords or key in result:
+            if key in exact_headwords or key in ambiguous:
                 continue
-            result[key] = (variant, index)
-            added += 1
+            was_present = key in result
+            add_alias_candidate(result, ambiguous, variant, index)
+            if not was_present and key in result:
+                added += 1
 
     output = list(result.values())
     output.sort(key=lambda item: stardict_sort_key(item[0]))
     print(f"Added noun phrase plural aliases: {added:,}")
+    if ambiguous:
+        print(f"Omitted ambiguous noun phrase aliases: {len(ambiguous):,}", file=sys.stderr)
     return output
 
 
@@ -466,6 +521,16 @@ def main():
         action="store_true",
         help="skip WordNet derivational aliases"
     )
+    parser.add_argument(
+        "--lemma-map",
+        metavar="JSON",
+        help="JSON file of explicit form-to-lemma mappings; omitted by default",
+    )
+    parser.add_argument(
+        "--merge-existing-syn",
+        action="store_true",
+        help="keep existing .syn entries unless a generated alias uses the same spelling",
+    )
 
     args = parser.parse_args()
 
@@ -504,10 +569,23 @@ def main():
 
     words = read_idx(idx_path, offset_bits)
 
+    explicit_lemmas = {}
+    if args.lemma_map:
+        try:
+            with open(args.lemma_map, "r", encoding="utf-8") as f:
+                explicit_lemmas = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(f"error: lemma map could not be read: {exc}") from exc
+        if not isinstance(explicit_lemmas, dict) or not all(
+            isinstance(form, str) and isinstance(lemma, str)
+            for form, lemma in explicit_lemmas.items()
+        ):
+            raise SystemExit("error: lemma map must be a JSON object of strings")
+
     print(f"Dictionary entries: {len(words):,}")
     print("Generating English inflections...")
 
-    synonyms = generate_inflections(words)
+    synonyms = generate_inflections(words, explicit_lemmas)
     synonyms = generate_multiword_verb_inflections(words, synonyms)
     synonyms = generate_noun_phrase_inflections(words, synonyms)
 
@@ -516,23 +594,53 @@ def main():
 
     print(f"Generated aliases: {len(synonyms):,}")
 
-    # 기존 .syn이 있다면 백업
-    if os.path.exists(syn_path):
-        backup = syn_path + ".bak"
+    if os.path.exists(syn_path) and args.merge_existing_syn:
+        old_synonyms = read_syn(syn_path, len(words))
+        merged = {form.casefold(): (form, index) for form, index in old_synonyms}
+        merged.update({form.casefold(): (form, index) for form, index in synonyms})
+        synonyms = sorted(merged.values(), key=lambda item: stardict_sort_key(item[0]))
+        print(f"Preserved/merged existing .syn aliases: {len(old_synonyms):,}")
 
-        print(f"Backup: {backup}")
-        shutil.copy2(syn_path, backup)
+    # Stage both files before replacing either. Back up the exact current files
+    # on every run so a backup never silently remains stale.
+    staged = []
+    try:
+        for target, writer in (
+            (syn_path, lambda path: write_syn(path, synonyms)),
+            (ifo_path, lambda path: write_text(path, updated_ifo_text(ifo_path, len(synonyms)))),
+        ):
+            fd, temp_path = tempfile.mkstemp(prefix=".morphology-", dir=os.path.dirname(target))
+            os.close(fd)
+            staged.append((target, temp_path))
+            writer(temp_path)
+            mode = os.stat(target).st_mode & 0o777 if os.path.exists(target) else 0o644
+            os.chmod(temp_path, mode)
 
-    write_syn(syn_path, synonyms)
+        original_targets = {target for target, _ in staged if os.path.exists(target)}
+        for target, _ in staged:
+            if os.path.exists(target):
+                backup = target + ".bak"
+                print(f"Backup: {backup}")
+                shutil.copy2(target, backup)
 
-    # .ifo 백업
-    ifo_backup = ifo_path + ".bak"
-
-    if not os.path.exists(ifo_backup):
-        print(f"Backup: {ifo_backup}")
-        shutil.copy2(ifo_path, ifo_backup)
-
-    update_ifo(ifo_path, len(synonyms))
+        replaced = []
+        try:
+            for target, temp_path in staged:
+                os.replace(temp_path, target)
+                replaced.append(target)
+        except OSError:
+            # Best-effort rollback from the freshly created backups.
+            for target in reversed(replaced):
+                backup = target + ".bak"
+                if target in original_targets:
+                    shutil.copy2(backup, target)
+                else:
+                    os.unlink(target)
+            raise
+    finally:
+        for _, temp_path in staged:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
 
     print()
     print("Done.")

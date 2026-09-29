@@ -12,7 +12,7 @@
 ./setup_environment.sh
 ```
 
-필요하면 `venv/`를 만들고 `requirements.txt`에 고정된 Python 패키지를 설치한 다음, NLTK WordNet 코퍼스를 준비합니다. 이미 환경이 준비되어 있으면 설치와 다운로드를 건너뛰므로 다시 실행해도 됩니다.
+필요하면 `venv/`를 만들고 `requirements.txt`에 고정된 Python 패키지를 설치한 다음, NLTK WordNet 코퍼스를 준비합니다. 다시 실행해도 환경을 점검하고 필요한 구성 요소를 설치할 수 있습니다.
 
 Python 인터프리터나 가상환경 경로를 바꾸려면 `PYTHON` 또는 `VENV_DIR` 환경 변수를 지정하세요.
 
@@ -24,7 +24,22 @@ Python 인터프리터나 가상환경 경로를 바꾸려면 `PYTHON` 또는 `V
 venv/bin/python add_inflections.py "/경로/사전.ifo" --force
 ```
 
-기존 `.syn`을 덮어쓰며, 원본 `.syn`과 `.ifo`는 각각 `.bak` 파일로 백업합니다. WordNet 파생형 없이 활용형만 만들려면 `--no-wordnet` 옵션을 추가하세요. 기존 구 표제어를 보존하면서 동사구의 첫 동사 활용형(예: `get to know`, `abandon oneself to something`)과 명사구의 복수형(예: `a bad apple` → `bad apples`)도 별칭으로 생성합니다.
+기본 동작은 `.syn`을 새로 생성해 기존 파일을 교체하는 것입니다. 기존 `.syn`이 있으면 `--merge-existing-syn`으로 수동 별칭을 보존할 수 있으며, 같은 철자의 새 생성 별칭은 새 결과가 우선합니다. 교체되는 `.syn`과 `.ifo`는 실행할 때마다 현재 상태를 `.bak` 파일에 백업합니다. WordNet 파생형 없이 활용형만 만들려면 `--no-wordnet` 옵션을 추가하세요. 기존 구 표제어를 보존하면서 동사구의 첫 동사 활용형(예: `get to know`, `abandon oneself to something`)과 명사구의 복수형(예: `a bad apple` → `bad apples`)도 별칭으로 생성합니다.
+
+코드에 들어 있던 특수 매핑은 [`lemma-map.json`](lemma-map.json)으로 분리했습니다. 이 파일은 예시/설정 파일이며, 명령에 `--lemma-map`으로 지정하지 않으면 적용되지 않습니다. 사전마다 필요한 매핑만 남기거나 수정해 사용하세요. JSON은 표면형을 기본형에 연결하는 객체입니다.
+
+```json
+{
+  "went": "go",
+  "better": "good"
+}
+```
+
+```bash
+venv/bin/python add_inflections.py "/path/to/dictionary.ifo" --force --lemma-map lemma-map.json
+```
+
+지정한 매핑의 대상 기본형이 현재 사전에 없으면 변환을 중단하지 않고 해당 매핑을 경고와 함께 건너뜁니다. 매핑을 지정하지 않으면 특수 매핑은 하나도 적용하지 않습니다. 자동 생성 과정에서 하나의 형태가 서로 다른 기본형 후보에 연결되면 임의로 하나를 고르지 않고 그 별칭을 제외합니다. 꼭 연결해야 하는 경우 `--lemma-map`으로 명시할 수 있습니다.
 
 ## Set up Python
 
@@ -50,5 +65,12 @@ venv/bin/python add_inflections.py "/path/to/dictionary.ifo" --force
 
 This regenerates `.syn` with English inflections, selected multiword verb and
 noun phrase forms, and unambiguous WordNet derivational aliases, and updates
-`synwordcount` in `.ifo`. Existing `.syn` and `.ifo` files are backed up as
-`.bak` files. Use `--no-wordnet` to omit WordNet derivational aliases.
+`synwordcount` in `.ifo`. Existing `.syn` and `.ifo` files are backed up to
+their `.bak` paths on each run. Use `--no-wordnet` to omit WordNet derivational
+aliases, `--merge-existing-syn` to retain old `.syn` entries, and `--lemma-map`
+to supply dictionary-specific form-to-lemma mappings. Missing targets in the
+specified mapping file are skipped with a warning. No special mappings are
+applied unless `--lemma-map` is provided; `lemma-map.json` contains the former
+in-code examples. Inflection aliases with multiple lemma targets are omitted
+instead of being assigned by dictionary order; an explicit mapping can resolve
+a desired case.
