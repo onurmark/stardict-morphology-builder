@@ -1,0 +1,16 @@
+# Local Python environment and caches
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local metadata and generated backups
+.DS_Store
+*.bak
+
+# StarDict source and generated data files
+*.dict
+*.dict.dz
+*.idx
+*.ifo
+*.syn
