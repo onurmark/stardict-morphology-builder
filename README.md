@@ -41,6 +41,12 @@ venv/bin/python add_inflections.py "/path/to/dictionary.ifo" --force --lemma-map
 
 지정한 매핑의 대상 기본형이 현재 사전에 없으면 변환을 중단하지 않고 해당 매핑을 경고와 함께 건너뜁니다. 매핑을 지정하지 않으면 특수 매핑은 하나도 적용하지 않습니다. 자동 생성 과정에서 하나의 형태가 서로 다른 기본형 후보에 연결되면 임의로 하나를 고르지 않고 그 별칭을 제외합니다. 꼭 연결해야 하는 경우 `--lemma-map`으로 명시할 수 있습니다.
 
+기본적으로 `.idx`는 수정하지 않습니다. NUL 문자가 표제어 안에 들어간 레코드를 색인에서 제거하려면 `--drop-nul-idx-entries`를 명시하세요. 이 옵션은 `.dict` 오프셋을 이용해 레코드 경계를 검증하고, 해당 `.idx` 레코드를 제거한 뒤 `.ifo`의 `wordcount`와 `idxfilesize` 및 새 `.syn`을 함께 갱신합니다. 제거된 표제어의 정의는 색인에서 접근할 수 없게 됩니다. 갱신 전 `.idx`, `.ifo`, `.syn`은 `.bak`으로 백업하며, 경계를 안전하게 복원할 수 없으면 파일을 변경하지 않고 중단합니다. 이 옵션과 `--merge-existing-syn`은 함께 쓸 수 없습니다.
+
+```bash
+venv/bin/python add_inflections.py "/path/to/dictionary.ifo" --force --drop-nul-idx-entries
+```
+
 ## Set up Python
 
 From the project directory, run:
@@ -97,3 +103,17 @@ warning. Without `--lemma-map`, no explicit mappings are applied. If automatic
 morphology finds that a spelling could point to multiple lemmas, it omits that
 alias instead of choosing a target based on dictionary order. Add an explicit
 mapping when you want to resolve such a case.
+
+By default, the script does not modify `.idx`. To remove index records whose
+headword contains an embedded NUL, explicitly pass
+`--drop-nul-idx-entries`. The script validates record boundaries using the
+`.dict` offsets, removes those `.idx` records, and updates `.ifo`'s `wordcount`
+and `idxfilesize` along with the newly generated `.syn`. Definitions whose
+records were removed remain in `.dict` but are no longer reachable through the
+index. Original `.idx`, `.ifo`, and `.syn` files are backed up to `.bak`; if
+record boundaries cannot be reconstructed safely, no files are changed. This
+option cannot be combined with `--merge-existing-syn`.
+
+```bash
+venv/bin/python add_inflections.py "/path/to/dictionary.ifo" --force --drop-nul-idx-entries
+```

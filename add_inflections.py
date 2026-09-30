@@ -101,6 +101,69 @@ def read_idx(path, offset_bits=32):
             entries.append((word, offset, size))
 
 
+def read_idx_without_nul_words(path, dict_path, offset_bits, expected_count):
+    """Recover record boundaries from contiguous .dict offsets and omit NUL labels."""
+    offset_size = 8 if offset_bits == 64 else 4
+    entry_size = offset_size + 4
+    entry_struct = ">QI" if offset_bits == 64 else ">II"
+    idx_data = open(path, "rb").read()
+    dict_size = os.path.getsize(dict_path)
+    cursor = 0
+    expected_offset = 0
+    words = []
+    clean_records = []
+    removed = 0
+
+    for record_number in range(expected_count):
+        candidates = []
+        search_from = cursor
+        while True:
+            terminator = idx_data.find(b"\0", search_from)
+            if terminator < 0:
+                break
+            metadata_start = terminator + 1
+            metadata_end = metadata_start + entry_size
+            if metadata_end <= len(idx_data):
+                offset, size = struct.unpack(
+                    entry_struct, idx_data[metadata_start:metadata_end]
+                )
+                if (
+                    offset == expected_offset
+                    and size <= dict_size - offset
+                ):
+                    candidates.append((terminator, metadata_end, offset, size))
+                    break
+            search_from = terminator + 1
+
+        if len(candidates) != 1:
+            raise RuntimeError(
+                f".idx {record_number + 1}번째 레코드 경계를 유일하게 복원할 수 없습니다."
+            )
+
+        terminator, next_cursor, offset, size = candidates[0]
+        raw_word = idx_data[cursor:terminator]
+        if b"\0" in raw_word:
+            removed += 1
+        else:
+            word = raw_word.decode("utf-8", errors="replace")
+            words.append((word, offset, size))
+            clean_records.append(idx_data[cursor:next_cursor])
+
+        cursor = next_cursor
+        expected_offset = offset + size
+
+    if cursor != len(idx_data):
+        raise RuntimeError(
+            f".ifo wordcount 이후 .idx에 {len(idx_data) - cursor}바이트가 남습니다."
+        )
+    if expected_offset != dict_size:
+        raise RuntimeError(
+            f"복원된 .idx가 .dict 전체를 덮지 않습니다 ({expected_offset}/{dict_size})."
+        )
+
+    return words, b"".join(clean_records), removed
+
+
 def write_syn(path, synonyms):
     """
     StarDict .syn 파일 생성.
@@ -146,27 +209,31 @@ def write_text(path, content):
         f.write(content)
 
 
-def updated_ifo_text(path, syn_count):
-    """Return .ifo contents with the current synonym count."""
+def write_bytes(path, content):
+    with open(path, "wb") as f:
+        f.write(content)
+
+
+def updated_ifo_text(path, syn_count, updates=None):
+    """Return .ifo contents with updated synonym and optional index counts."""
     with open(path, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
-    found = False
+    replacements = dict(updates or {})
+    replacements["synwordcount"] = syn_count
     output = []
 
     for line in lines:
-        if line.startswith("synwordcount="):
-            output.append(f"synwordcount={syn_count}\n")
-            found = True
+        key, separator, _ = line.partition("=")
+        if separator and key in replacements:
+            output.append(f"{key}={replacements.pop(key)}\n")
         else:
             output.append(line)
 
-    if not found:
-        # 일반적으로 마지막에 추가해도 된다.
+    if replacements:
         if output and not output[-1].endswith("\n"):
             output[-1] += "\n"
-
-        output.append(f"synwordcount={syn_count}\n")
+        output.extend(f"{key}={value}\n" for key, value in replacements.items())
 
     return "".join(output)
 
@@ -531,6 +598,11 @@ def main():
         action="store_true",
         help="keep existing .syn entries unless a generated alias uses the same spelling",
     )
+    parser.add_argument(
+        "--drop-nul-idx-entries",
+        action="store_true",
+        help="remove .idx records whose headword contains an embedded NUL and rebuild indexes",
+    )
 
     args = parser.parse_args()
 
@@ -542,6 +614,7 @@ def main():
     base = ifo_path[:-4]
 
     idx_path = base + ".idx"
+    dict_path = base + ".dict"
     syn_path = base + ".syn"
 
     if not os.path.exists(idx_path):
@@ -564,10 +637,31 @@ def main():
             f"error: 지원하지 않는 idxoffsetbits={offset_bits}"
         )
 
+    try:
+        expected_count = int(ifo["wordcount"])
+    except (KeyError, ValueError) as exc:
+        raise SystemExit("error: .ifo에 유효한 wordcount가 없습니다.") from exc
+
+    if args.drop_nul_idx_entries and args.merge_existing_syn:
+        raise SystemExit(
+            "error: --drop-nul-idx-entries와 --merge-existing-syn은 함께 사용할 수 없습니다. "
+            "기존 .syn의 대상 번호가 변경될 수 있습니다."
+        )
+
     print(f"Reading: {idx_path}")
     print(f"idxoffsetbits: {offset_bits}")
 
-    words = read_idx(idx_path, offset_bits)
+    repaired_idx_data = None
+    if args.drop_nul_idx_entries:
+        try:
+            words, repaired_idx_data, removed_nul_entries = read_idx_without_nul_words(
+                idx_path, dict_path, offset_bits, expected_count
+            )
+        except (OSError, RuntimeError) as exc:
+            raise SystemExit(f"error: NUL 포함 .idx 레코드 복원 실패: {exc}") from exc
+        print(f"Removed NUL-containing .idx records: {removed_nul_entries:,}")
+    else:
+        words = read_idx(idx_path, offset_bits)
 
     explicit_lemmas = {}
     if args.lemma_map:
@@ -605,10 +699,20 @@ def main():
     # on every run so a backup never silently remains stale.
     staged = []
     try:
-        for target, writer in (
+        ifo_updates = {}
+        targets = []
+        if repaired_idx_data is not None:
+            targets.append((idx_path, lambda path: write_bytes(path, repaired_idx_data)))
+            ifo_updates["wordcount"] = len(words)
+            ifo_updates["idxfilesize"] = len(repaired_idx_data)
+        targets.extend((
             (syn_path, lambda path: write_syn(path, synonyms)),
-            (ifo_path, lambda path: write_text(path, updated_ifo_text(ifo_path, len(synonyms)))),
-        ):
+            (ifo_path, lambda path: write_text(
+                path, updated_ifo_text(ifo_path, len(synonyms), ifo_updates)
+            )),
+        ))
+
+        for target, writer in targets:
             fd, temp_path = tempfile.mkstemp(prefix=".morphology-", dir=os.path.dirname(target))
             os.close(fd)
             staged.append((target, temp_path))
@@ -647,7 +751,10 @@ def main():
     print(f"  .syn : {syn_path}")
     print(f"  aliases: {len(synonyms):,}")
     print()
-    print("Original .idx and .dict were not modified.")
+    if repaired_idx_data is None:
+        print("Original .idx and .dict were not modified.")
+    else:
+        print("NUL-containing .idx records were removed; .dict data was left unchanged.")
 
 
 if __name__ == "__main__":
